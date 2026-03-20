@@ -3,6 +3,7 @@
 # dependencies
 /node_modules
 admin/node_modules
+admin/.next
 /.pnp
 .pnp.*
 .yarn/*
@@ -42,4 +43,3 @@ yarn-error.log*
 next-env.d.ts
 
 /app/generated/prisma
-admin/
