@@ -4,13 +4,14 @@ import Image from "next/image";
 
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [mousePos, setMousePos] = useState({ x: -100, y: -100 });
   const [lightboxImg, setLightboxImg] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [rating, setRating] = useState(0);
   const [hoverRating, setHoverRating] = useState(0);
   const [pageLoaded, setPageLoaded] = useState(false);
   const [imagesLoaded, setImagesLoaded] = useState<{[key: string]: boolean}>({});
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [reviewDone, setReviewDone] = useState(false);
 
   // Page loader
   useEffect(() => {
@@ -45,17 +46,30 @@ export default function Home() {
   // Review form submission
   const handleReviewSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (!rating) { alert("Please select a star rating"); return; }
+    setReviewSubmitting(true);
     const formData = new FormData(e.currentTarget);
-    const reviewData = {
-      name: formData.get('name'),
-      email: formData.get('email'),
-      rating: rating,
-      message: formData.get('message')
-    };
-    
-    // TODO: Connect to backend API
-    console.log('Review submission:', reviewData);
-    // Later: await fetch('/api/reviews', { method: 'POST', body: JSON.stringify(reviewData) });
+    try {
+      const res = await fetch('/api/reviews', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: formData.get('name'),
+          email: formData.get('email'),
+          rating,
+          message: formData.get('message')
+        })
+      });
+      if (res.ok) {
+        setReviewDone(true);
+        setRating(0);
+        (e.target as HTMLFormElement).reset();
+      }
+    } catch {
+      alert("Failed to submit review. Please try again.");
+    } finally {
+      setReviewSubmitting(false);
+    }
   };
 
   // Glitter particles
@@ -111,14 +125,7 @@ export default function Home() {
 
 
 
-  // Cursor tracking
-  useEffect(() => {
-    const move = (e: MouseEvent) => setMousePos({ x: e.clientX, y: e.clientY });
-    window.addEventListener("mousemove", move);
-    return () => window.removeEventListener("mousemove", move);
-  }, []);
-
-  // Scroll reveal animation
+// Scroll reveal animation
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -235,11 +242,7 @@ export default function Home() {
       {/* Glitter canvas */}
       <canvas ref={canvasRef} className="glitter-canvas" />
 
-      {/* Custom cursor */}
-      <div className="cur-dot" style={{ left: mousePos.x, top: mousePos.y }} />
-      <div className="cur-ring" style={{ left: mousePos.x, top: mousePos.y }} />
-
-      {/* ── LUXURY NAVBAR ── */}
+{/* ── LUXURY NAVBAR ── */}
       <nav className="nav">
         <div className="nav-container">
           {/* Brand on far left */}
@@ -252,9 +255,9 @@ export default function Home() {
             <ul className="nav-links">
               <li><a href="#portfolio">Portfolio</a></li>
               <li><a href="#services">Services</a></li>
-              <li><a href="#contact">Contact</a></li>
+              <li><a href="#footer">Contact</a></li>
             </ul>
-            <a href="/booking" className="nav-btn" style={{ 
+            <a href="/booking" className="nav-btn nav-btn-desktop" style={{ 
               display: 'flex', 
               alignItems: 'center', 
               gap: '8px',
@@ -286,7 +289,7 @@ export default function Home() {
         <div className="mobile-menu-links">
           <a href="#portfolio" onClick={() => setMenuOpen(false)}>Portfolio</a>
           <a href="#services" onClick={() => setMenuOpen(false)}>Services</a>
-          <a href="#contact" onClick={() => setMenuOpen(false)}>Contact</a>
+          <a href="#footer" onClick={() => setMenuOpen(false)}>Contact</a>
           <a href="/booking" className="nav-btn" onClick={() => setMenuOpen(false)}>
             ✦ Book Appointment
           </a>
@@ -429,12 +432,13 @@ export default function Home() {
               </div>
               <div className="price-items">
                 {pkg.items.map((item, i) => (
-                  <div key={i} className={`price-card${item.featured ? ' featured' : ''}`}>
-                    <div className="price-card-content">
+                  <div key={i} className="price-card">
+                    <div className="price-card-index">0{i + 1}</div>
+                    <div className="price-card-body">
                       <span className="price-card-name">{item.name}</span>
                       <p className="price-card-desc">{item.desc}</p>
                     </div>
-                    <span className="price-card-price">GHS {item.price}</span>
+                    <div className="price-card-price">GHS {item.price}</div>
                   </div>
                 ))}
               </div>
@@ -666,7 +670,12 @@ export default function Home() {
           ></textarea>
           
           <div style={{ textAlign: 'center' }}>
-            <button type="submit" style={{
+            {reviewDone ? (
+              <p style={{ fontFamily: 'Cormorant, serif', fontSize: '20px', fontStyle: 'italic', color: 'var(--gold2)' }}>
+                ✦ Thank you! Your review has been submitted for approval.
+              </p>
+            ) : (
+            <button type="submit" disabled={reviewSubmitting} style={{
               padding: 'clamp(16px, 3vw, 20px) clamp(40px, 8vw, 50px)',
               background: 'linear-gradient(135deg, var(--fuchsia), var(--violet))',
               border: 'none',
@@ -675,20 +684,24 @@ export default function Home() {
               fontFamily: 'Bebas Neue, sans-serif',
               fontSize: 'clamp(12px, 2vw, 14px)',
               letterSpacing: 'clamp(2px, 0.5vw, 4px)',
-              cursor: 'pointer',
+              cursor: reviewSubmitting ? 'not-allowed' : 'pointer',
+              opacity: reviewSubmitting ? 0.7 : 1,
               transition: 'all 0.4s',
               textTransform: 'uppercase',
               boxShadow: '0 10px 30px rgba(214,63,168,0.3)'
             }}
             onMouseEnter={(e) => {
-              (e.target as HTMLButtonElement).style.transform = 'translateY(-4px)';
-              (e.target as HTMLButtonElement).style.boxShadow = '0 20px 40px rgba(214,63,168,0.5)';
+              if (!reviewSubmitting) {
+                (e.target as HTMLButtonElement).style.transform = 'translateY(-4px)';
+                (e.target as HTMLButtonElement).style.boxShadow = '0 20px 40px rgba(214,63,168,0.5)';
+              }
             }}
             onMouseLeave={(e) => {
               (e.target as HTMLButtonElement).style.transform = 'translateY(0)';
               (e.target as HTMLButtonElement).style.boxShadow = '0 10px 30px rgba(214,63,168,0.3)';
             }}
-            >✦ Submit Review ✦</button>
+            >{reviewSubmitting ? 'Submitting...' : '✦ Submit Review ✦'}</button>
+            )}
           </div>
         </form>
         </div>
@@ -717,14 +730,6 @@ export default function Home() {
           <p className="contact-note">
             Tracy&rsquo;s calendar fills fast. Reach out now to lock in your date — and let&rsquo;s create something truly unforgettable together.
           </p>
-          <div className="clinks">
-            {contacts.map(({ icon, lbl, href }) => (
-              <a key={lbl} href={href} className="clink-btn">
-                <div className="clink-btn-icon">{icon}</div>
-                <span className="clink-btn-label">{lbl}</span>
-              </a>
-            ))}
-          </div>
           <a href="/booking" className="btn-final">✦ Book Now ✦</a>
         </div>
       </section>
@@ -741,7 +746,7 @@ export default function Home() {
       )}
 
       {/* ── FOOTER ── */}
-      <footer className="footer" style={{ position: "relative", zIndex: 1 }}>
+      <footer id="footer" className="footer" style={{ position: "relative", zIndex: 1 }}>
         <div>
           <div className="footer-big">TRAYART GH</div>
           <div className="footer-sub">Luxury Bridal Makeup · Accra, Ghana · Est. 2016</div>

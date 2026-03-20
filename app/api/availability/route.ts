@@ -14,12 +14,10 @@ export async function GET(req: Request) {
     where: {
       eventDate: date,
       OR: [
-        { status: 'confirmed' },
+        { status: { in: ['confirmed', 'paid', 'in-progress'] } },
         {
-          status: 'pending',
-          expiresAt: {
-            gt: new Date() // Only pending bookings that haven't expired
-          }
+          status: 'pending-payment',
+          expiresAt: { gt: new Date() }
         }
       ]
     }

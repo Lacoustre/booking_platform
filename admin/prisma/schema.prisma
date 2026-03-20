@@ -1,0 +1,54 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Booking {
+  id              String            @id @default(cuid())
+  name            String
+  email           String
+  phone           String
+  eventDate       String            @unique
+  eventType       String
+  package         String
+  location        String
+  dressColor      String?
+  makeupType      String
+  message         String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  packagePrice    Int?
+  depositAmount   Int?
+  paymentStatus   String            @default("unpaid")
+  paymentRef      String?
+  status          String            @default("pending-payment")
+  adminNotes      String?
+  paidAt          DateTime?
+  expiresAt       DateTime?
+  activity        BookingActivity[]
+}
+
+model BookingActivity {
+  id        String   @id @default(cuid())
+  bookingId String
+  action    String
+  note      String?
+  createdAt DateTime @default(now())
+  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  rating    Int
+  message   String
+  approved  Boolean  @default(false)
+  featured  Boolean  @default(false)
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+}

@@ -8,23 +8,38 @@ datasource db {
 }
 
 model Booking {
-  id              String   @id @default(cuid())
+  id              String            @id @default(cuid())
   name            String
   email           String
   phone           String
-  eventDate       String   @unique
+  countryCode     String?
+  eventDate       String
   eventType       String
   package         String
   location        String
   dressColor      String?
   makeupType      String
   message         String?
-  status          String   @default("pending")
-  paymentStatus   String   @default("unpaid")
-  paymentReference String?
-  paidAmount      Float?
+  status          String            @default("pending-payment")
+  paymentStatus   String            @default("unpaid")
+  paymentRef      String?
+  packagePrice    Int?
+  depositAmount   Int?
+  adminNotes      String?
+  paidAt          DateTime?
   expiresAt       DateTime?
-  createdAt       DateTime @default(now())
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  activity        BookingActivity[]
+}
+
+model BookingActivity {
+  id        String   @id @default(cuid())
+  bookingId String
+  action    String
+  note      String?
+  createdAt DateTime @default(now())
+  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 }
 
 model Review {
@@ -34,5 +49,7 @@ model Review {
   rating    Int
   message   String
   approved  Boolean  @default(false)
+  featured  Boolean  @default(false)
+  verified  Boolean  @default(false)
   createdAt DateTime @default(now())
 }

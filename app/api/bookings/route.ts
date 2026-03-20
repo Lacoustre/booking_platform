@@ -1,9 +1,9 @@
 import { prisma } from "@/lib/prisma"
 import { resend } from "@/lib/email"
 import { NextResponse } from "next/server"
-import LRU from "lru-cache"
+import { LRUCache } from "lru-cache"
 
-const rateLimit = new LRU({
+const rateLimit = new LRUCache({
   max: 100,
   ttl: 60 * 1000 // 1 minute
 })
@@ -23,6 +23,15 @@ export async function POST(req: Request) {
   rateLimit.set(ip, tokenCount + 1)
 
   try {
+    // Silently clean up expired unpaid bookings on every new request
+    prisma.booking.deleteMany({
+      where: {
+        status: "pending",
+        paymentStatus: "unpaid",
+        expiresAt: { lt: new Date() }
+      }
+    }).catch(() => {}) // fire-and-forget, don't block the request
+
     const data = await req.json()
 
     if (!data.name || !data.email || !data.eventDate) {
@@ -35,9 +44,9 @@ export async function POST(req: Request) {
     const booking = await prisma.booking.create({
       data: {
         ...data,
-        status: 'pending',
+        status: 'pending-payment',
         paymentStatus: 'unpaid',
-        expiresAt: new Date(Date.now() + 30 * 60 * 1000) // 30 minutes from now
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000)
       }
     })
 
@@ -82,10 +91,11 @@ export async function POST(req: Request) {
       success: true,
       bookingId: booking.id
     })
-  } catch {
+  } catch (err) {
+    console.error("Booking error:", err);
     return NextResponse.json({
       success: false,
-      message: "This date is already booked"
+      message: err instanceof Error ? err.message : "Booking failed. Please try again."
     })
   }
 }

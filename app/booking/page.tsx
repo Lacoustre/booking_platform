@@ -1,10 +1,33 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
+import { parsePhoneNumberFromString, getCountries, getCountryCallingCode, AsYouType } from "libphonenumber-js";
+import type { CountryCode } from "libphonenumber-js";
 
-// Regex constants to avoid recreation
-const phoneRegex = /^[0-9+\-\s()]*$/;
 const nameRegex = /^[a-zA-Z\s]*$/;
+
+type Country = { code: CountryCode; name: string; dial: string };
+
+function codeToFlag(code: string): string {
+  return code.toUpperCase().replace(/./g, c =>
+    String.fromCodePoint(c.charCodeAt(0) + 127397)
+  );
+}
+
+function buildCountryList(): Country[] {
+  const display = new Intl.DisplayNames(["en"], { type: "region" });
+  return getCountries()
+    .map((code) => ({
+      code,
+      name: display.of(code) ?? code,
+      dial: `+${getCountryCallingCode(code)}`
+    }))
+    .sort((a, b) => {
+      if (a.code === "GH") return -1;
+      if (b.code === "GH") return 1;
+      return a.name.localeCompare(b.name);
+    });
+}
 
 // Style constants to avoid recreation
 const toastBaseStyle = {
@@ -44,26 +67,11 @@ const dateIconStyle = {
   fontSize: "18px"
 };
 
-async function checkDateAvailability(date: string) {
-  const res = await fetch(`/api/availability?date=${date}`);
-
-  if (!res.ok) {
-    throw new Error("Availability check failed");
-  }
-
-  const data = await res.json();
-
-  if (!data.available) {
-    throw { type: "UNAVAILABLE" };
-  }
-
-  return true;
-};
-
 type BookingForm = {
   name: string;
   email: string;
   phone: string;
+  countryCode: CountryCode;
   eventDate: string;
   eventType: string;
   package: string;
@@ -77,6 +85,7 @@ const initialFormState: BookingForm = {
   name: "",
   email: "",
   phone: "",
+  countryCode: "GH",
   eventDate: "",
   eventType: "",
   package: "",
@@ -109,33 +118,56 @@ function validateForm(data: BookingForm): string | null {
     return "Please enter a valid email address";
   }
 
+  // Block past dates
+  const today = new Date().toISOString().slice(0, 10);
+  if (data.eventDate < today) {
+    return "Please choose today or a future date";
+  }
+
+  // Phone validation
+  const fullPhone = `+${getCountryCallingCode(data.countryCode)}${data.phone.replace(/\D/g, "")}`;
+  const parsed = parsePhoneNumberFromString(fullPhone, data.countryCode);
+  if (!parsed || !parsed.isValid()) {
+    return "Please enter a valid phone number for the selected country";
+  }
+
   return null;
 }
 
 function sanitizeForm(data: BookingForm): BookingForm {
-  return Object.fromEntries(
+  const sanitized = Object.fromEntries(
     Object.entries(data).map(([k, v]) => [
       k,
       typeof v === "string" ? v.trim() : v
     ])
   ) as BookingForm;
+  // Store phone in full international format
+  const fullPhone = `+${getCountryCallingCode(data.countryCode)}${data.phone.replace(/\D/g, "")}`;
+  const parsed = parsePhoneNumberFromString(fullPhone, data.countryCode);
+  sanitized.phone = parsed ? parsed.formatInternational() : fullPhone;
+  return sanitized;
 }
 
 export default function BookingPage() {
   const [formData, setFormData] = useState<BookingForm>(initialFormState);
+  const [countries, setCountries] = useState<Country[]>([]);
+  const [countrySearch, setCountrySearch] = useState("");
+  const [countryOpen, setCountryOpen] = useState(false);
+  const countryRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(false);
   const [checkingDate, setCheckingDate] = useState(false);
   const [bookedDates, setBookedDates] = useState<string[]>([]);
   const [minDate, setMinDate] = useState<string>("");
   const [toast, setToast] = useState<{message: string, type: 'success' | 'error'} | null>(null);
   const [pageLoaded, setPageLoaded] = useState(false);
+  const [phoneError, setPhoneError] = useState<string | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentDateRef = useRef<string>("");
   const lastCheckedDateRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
     setMinDate(new Date().toISOString().slice(0, 10));
+    setCountries(buildCountryList());
 
     // Page loader
     const timer = setTimeout(() => setPageLoaded(true), 1200);
@@ -161,21 +193,47 @@ export default function BookingPage() {
     };
   }, []);
 
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (countryRef.current && !countryRef.current.contains(e.target as Node)) {
+        setCountryOpen(false);
+        setCountrySearch("");
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const filteredCountries = countrySearch.trim()
+    ? countries.filter(c =>
+        c.name.toLowerCase().includes(countrySearch.toLowerCase()) ||
+        c.dial.includes(countrySearch)
+      )
+    : countries;
+
+  const selectedCountry = countries.find(c => c.code === formData.countryCode);
+
+  const [calendarDate, setCalendarDate] = useState<Date>(new Date());
+
+  const calendarDays = (() => {
+    const year = calendarDate.getFullYear();
+    const month = calendarDate.getMonth();
+    const firstDay = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    return { year, month, firstDay, daysInMonth };
+  })();
+
+  const formatCalDate = (y: number, m: number, d: number) =>
+    `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+
   const showToast = useCallback((message: string, type: 'success' | 'error') => {
     if (!mountedRef.current) return;
-    if (toast?.message === message && toast?.type === type) return;
-
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-    }
-    
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ message, type });
     toastTimerRef.current = setTimeout(() => {
-      if (mountedRef.current) {
-        setToast(null);
-      }
+      if (mountedRef.current) setToast(null);
     }, 4000);
-  }, [toast]);
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -265,16 +323,42 @@ export default function BookingPage() {
     }
   };
 
+  const validatePhone = useCallback((number: string, country: CountryCode) => {
+    if (!number) { setPhoneError(null); return; }
+    const formatted = new AsYouType(country).input(number);
+    const fullPhone = `+${getCountryCallingCode(country)}${number.replace(/\D/g, "")}`;
+    const parsed = parsePhoneNumberFromString(fullPhone, country);
+    if (parsed && parsed.isValid()) {
+      setPhoneError(null);
+    } else if (number.replace(/\D/g, "").length >= 6) {
+      setPhoneError("Invalid number for this country");
+    } else {
+      setPhoneError(null);
+    }
+    return formatted;
+  }, []);
+
   const handleChange = async (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     
-    // Phone number validation
-    if (name === 'phone' && !phoneRegex.test(value)) {
-      return;
-    }
-    
     // Name validation
     if (name === 'name' && !nameRegex.test(value)) {
+      return;
+    }
+
+    // Phone input — format as you type
+    if (name === 'phone') {
+      const digits = value.replace(/[^0-9]/g, "");
+      const formatted = new AsYouType(formData.countryCode).input(digits);
+      validatePhone(digits, formData.countryCode);
+      setFormData(prev => ({ ...prev, phone: formatted }));
+      return;
+    }
+
+    // Country code change — reset phone
+    if (name === 'countryCode') {
+      setFormData(prev => ({ ...prev, countryCode: value as CountryCode, phone: "" }));
+      setPhoneError(null);
       return;
     }
 
@@ -289,55 +373,51 @@ export default function BookingPage() {
 
     // Date availability check
     if (value) {
+      // Block past dates
+      if (value < minDate) {
+        showToast("Please choose today or a future date.", "error");
+        return;
+      }
+
       if (bookedDates.includes(value)) {
         showToast("This date is already booked.", "error");
         return;
       }
 
       if (value === formData.eventDate) return;
-      
-      // Reset cache if different date
-      if (value !== lastCheckedDateRef.current) {
-        lastCheckedDateRef.current = null;
-      }
-      
-      // Check cache to prevent duplicate API calls
+
+      // Already verified this date
       if (lastCheckedDateRef.current === value) {
         setFormData(prev => ({ ...prev, eventDate: value }));
         return;
       }
-      
-      currentDateRef.current = value;
+
       setCheckingDate(true);
-      
+
       try {
-        await new Promise(resolve => setTimeout(resolve, 250));
-        
-        if (currentDateRef.current !== value) {
-          setCheckingDate(false);
-          return;
-        }
-        
-        await checkDateAvailability(value);
-        if (mountedRef.current) {
-          lastCheckedDateRef.current = value;
-        }
-      } catch (error: unknown) {
-        if (error && typeof error === 'object' && 'type' in error && error.type === "UNAVAILABLE") {
+        const res = await fetch(`/api/availability?date=${value}`);
+        const data = await res.json();
+
+        if (!data.available) {
           showToast("This date is already booked. Please choose another.", "error");
-          if (mountedRef.current) {
-            setFormData(prev => ({ ...prev, eventDate: "" }));
-          }
           return;
         }
-        
-        console.error(error);
-        showToast("Could not verify availability. You can still submit the request.", "error");
+
+        lastCheckedDateRef.current = value;
+        if (mountedRef.current) {
+          setFormData(prev => ({ ...prev, eventDate: value }));
+        }
+      } catch {
+        // Network error — still allow selection
+        if (mountedRef.current) {
+          setFormData(prev => ({ ...prev, eventDate: value }));
+        }
       } finally {
-        setCheckingDate(false);
+        if (mountedRef.current) setCheckingDate(false);
       }
+      return;
     }
-    
+
     if (mountedRef.current) {
       setFormData(prev => ({ ...prev, eventDate: value }));
     }
@@ -374,22 +454,17 @@ export default function BookingPage() {
           <Link href="/" className="nav-brand">
             <div className="nav-brand-name">Trayart GH Makeover</div>
           </Link>
-          <Link href="/" className="nav-btn">← Back</Link>
+
         </div>
       </nav>
 
       {/* Booking Form */}
-      <section style={{ padding: "clamp(100px, 15vw, 140px) clamp(20px, 5vw, 60px) 80px", maxWidth: "800px", margin: "0 auto" }}>
-        <div style={{ textAlign: "center", marginBottom: "60px" }}>
+      <section className="booking-section">
+        {/* Header */}
+        <div className="booking-header">
           <div className="pre-label">Book Your Session</div>
-          <h1 style={{ 
-            fontFamily: "Cormorant, serif", 
-            fontSize: "clamp(48px, 8vw, 80px)", 
-            fontWeight: 700, 
-            color: "var(--cream)",
-            marginBottom: "20px"
-          }}>
-            Your <em style={{ 
+          <h1 className="booking-title">
+            Your <em style={{
               fontStyle: "italic",
               background: "linear-gradient(100deg, var(--hot), var(--rose), var(--lavender), var(--gold2))",
               backgroundClip: "text",
@@ -397,185 +472,246 @@ export default function BookingPage() {
               WebkitTextFillColor: "transparent"
             }}>Transformation</em> Awaits
           </h1>
-          <p style={{ 
-            fontSize: "18px", 
-            color: "rgba(249,240,246,0.7)", 
-            maxWidth: "600px", 
-            margin: "0 auto" 
-          }}>
-            Fill out the form below and Tracy will get back to you within 24 hours to confirm your booking and discuss your vision.
+          <p className="booking-subtitle">
+            Fill out the form below and Tracy will get back to you within 24 hours to confirm your booking.
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} style={{
-          background: "linear-gradient(135deg, rgba(42,0,64,0.4), rgba(16,0,24,0.6))",
-          borderRadius: "clamp(16px, 4vw, 24px)",
-          padding: "clamp(30px, 8vw, 60px)",
-          border: "1px solid rgba(214,63,168,0.2)"
-        }}>
-          <div className="booking-grid">
-            <input
-              required
-              id="name"
-              aria-label="Full Name"
-              autoComplete="name"
-              maxLength={80}
-              type="text"
-              name="name"
-              placeholder="Your Full Name"
-              value={formData.name}
-              onChange={handleChange}
-              disabled={loading || checkingDate}
-              className="review-input"
-            />
-            <input
-              required
-              id="email"
-              aria-label="Email Address"
-              autoComplete="email"
-              maxLength={120}
-              type="email"
-              name="email"
-              placeholder="Email Address"
-              value={formData.email}
-              onChange={handleChange}
-              disabled={loading || checkingDate}
-              className="review-input"
-            />
-          </div>
+        <form onSubmit={handleSubmit} className="booking-form">
 
+          {/* Section: Personal Info */}
+          <p className="form-section-label">Personal Details</p>
           <div className="booking-grid">
-            <input
-              required
-              inputMode="tel"
-              id="phone"
-              aria-label="Phone Number"
-              autoComplete="tel"
-              maxLength={20}
-              type="tel"
-              name="phone"
-              placeholder="Phone Number"
-              value={formData.phone}
-              onChange={handleChange}
-              disabled={loading || checkingDate}
-              className="review-input"
-            />
-            <div style={dateWrapperStyle}>
-              <input
-                required
-                id="eventDate"
-                aria-label="Event Date"
-                type="date"
-                name="eventDate"
-                min={minDate}
-                value={formData.eventDate}
-                onChange={handleChange}
-                disabled={loading || checkingDate}
-                className="review-input"
-                style={{ 
-                  cursor: 'pointer',
-                  colorScheme: 'dark',
-                  paddingRight: '50px'
-                }}
-              />
-              <div style={dateIconStyle}>
-                📅
-              </div>
+            <div className="field-wrap">
+              <label className="field-label">Full Name</label>
+              <input required id="name" autoComplete="name" maxLength={80} type="text" name="name"
+                placeholder="e.g. Abena Mensah" value={formData.name} onChange={handleChange}
+                disabled={loading || checkingDate} className="review-input" />
             </div>
-            {checkingDate && (
-              <small style={dateCheckIndicatorStyle}>
-                Checking date availability...
-              </small>
-            )}
-            {toast?.message.includes("already booked") && (
-              <small style={{ color: "#f87171", fontSize: "12px", marginTop: "4px" }}>
-                Please choose another date
-              </small>
-            )}
+            <div className="field-wrap">
+              <label className="field-label">Email Address</label>
+              <input required id="email" autoComplete="email" maxLength={120} type="email" name="email"
+                placeholder="e.g. abena@email.com" value={formData.email} onChange={handleChange}
+                disabled={loading || checkingDate} className="review-input" />
+            </div>
           </div>
 
+          {/* Section: Contact & Date */}
+          <p className="form-section-label">Contact & Date</p>
           <div className="booking-grid">
-            <input
-              required
-              inputMode="text"
-              id="location"
-              aria-label="Event Location"
-              autoComplete="address-line1"
-              maxLength={120}
-              type="text"
-              name="location"
-              placeholder="Event Location (e.g. East Legon, Accra)"
-              value={formData.location}
-              onChange={handleChange}
-              disabled={loading || checkingDate}
-              className="review-input"
-            />
-            <input
-              id="dressColor"
-              aria-label="Dress Color"
-              maxLength={40}
-              type="text"
-              name="dressColor"
-              placeholder="Dress Color"
-              value={formData.dressColor}
-              onChange={handleChange}
-              disabled={loading || checkingDate}
-              className="review-input"
-            />
+            <div className="field-wrap">
+              <label className="field-label">Phone Number</label>
+              <div style={{ display: "flex", gap: "6px" }}>
+                <div ref={countryRef} style={{ position: "relative", flexShrink: 0 }}>
+                  {/* Trigger button */}
+                  <button
+                    type="button"
+                    onClick={() => { setCountryOpen(o => !o); setCountrySearch(""); }}
+                    disabled={loading || checkingDate}
+                    className="review-input country-trigger"
+                    aria-label="Select country code"
+                  >
+                    {selectedCountry ? `${codeToFlag(selectedCountry.code)} ${selectedCountry.dial}` : "🌍"}
+                    <span style={{ marginLeft: "4px", opacity: 0.5, fontSize: "10px" }}>▾</span>
+                  </button>
+
+                  {/* Dropdown */}
+                  {countryOpen && (
+                    <div className="country-dropdown">
+                      <input
+                        autoFocus
+                        type="text"
+                        placeholder="Search country or code..."
+                        value={countrySearch}
+                        onChange={e => setCountrySearch(e.target.value)}
+                        className="country-search"
+                      />
+                      <ul className="country-list">
+                        {filteredCountries.length === 0 && (
+                          <li className="country-empty">No results</li>
+                        )}
+                        {filteredCountries.map(({ code, name, dial }) => (
+                          <li
+                            key={code}
+                            className={`country-option${formData.countryCode === code ? " active" : ""}`}
+                            onClick={() => {
+                              setFormData(prev => ({ ...prev, countryCode: code, phone: "" }));
+                              setPhoneError(null);
+                              setCountryOpen(false);
+                              setCountrySearch("");
+                            }}
+                          >
+                            <span>{codeToFlag(code)}</span>
+                            <span className="country-name">{name}</span>
+                            <span className="country-dial">{dial}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+                <div style={{ flex: 1, position: "relative" }}>
+                  <input required inputMode="tel" id="phone" autoComplete="tel" maxLength={20} type="tel"
+                    name="phone" placeholder="54 236 1468" value={formData.phone} onChange={handleChange}
+                    disabled={loading || checkingDate}
+                    className={`review-input${phoneError ? " input-error" : ""}`}
+                    style={{ width: "100%" }} />
+                  {formData.phone && !phoneError && (() => {
+                    const full = `+${getCountryCallingCode(formData.countryCode)}${formData.phone.replace(/\D/g, "")}`;
+                    const p = parsePhoneNumberFromString(full, formData.countryCode);
+                    return p?.isValid() ? (
+                      <span style={{ position: "absolute", right: "10px", top: "50%", transform: "translateY(-50%)", color: "#10b981", fontSize: "13px" }}>✓</span>
+                    ) : null;
+                  })()}
+                </div>
+              </div>
+              {phoneError
+                ? <small className="field-hint" style={{ color: "#f87171" }}>{phoneError}</small>
+                : <small className="field-hint">{selectedCountry?.dial} · {selectedCountry?.name}</small>
+              }
+            </div>
+            <div className="field-wrap">
+              <label className="field-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>Event Date</span>
+                {formData.eventDate && (
+                  <button type="button" onClick={() => {
+                    setFormData(prev => ({ ...prev, eventDate: "" }));
+                    lastCheckedDateRef.current = null;
+                  }} style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: "9px", letterSpacing: "2px", color: "var(--fuchsia)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+                    CLEAR
+                  </button>
+                )}
+              </label>
+
+              {/* Visual Calendar */}
+              <div className="booking-calendar">
+                {/* Month nav */}
+                <div className="cal-header">
+                  <button type="button" className="cal-nav" onClick={() => setCalendarDate(d => new Date(d.getFullYear(), d.getMonth() - 1, 1))}>&#8249;</button>
+                  <span className="cal-month">
+                    {calendarDate.toLocaleString("default", { month: "long", year: "numeric" })}
+                  </span>
+                  <button type="button" className="cal-nav" onClick={() => setCalendarDate(d => new Date(d.getFullYear(), d.getMonth() + 1, 1))}>&#8250;</button>
+                </div>
+
+                {/* Day labels */}
+                <div className="cal-grid">
+                  {["Su","Mo","Tu","We","Th","Fr","Sa"].map(d => (
+                    <div key={d} className="cal-day-label">{d}</div>
+                  ))}
+
+                  {/* Empty cells */}
+                  {Array(calendarDays.firstDay).fill(null).map((_, i) => (
+                    <div key={`e${i}`} />
+                  ))}
+
+                  {/* Day cells */}
+                  {Array(calendarDays.daysInMonth).fill(null).map((_, i) => {
+                    const day = i + 1;
+                    const dateStr = formatCalDate(calendarDays.year, calendarDays.month, day);
+                    const isPast = dateStr < minDate;
+                    const isBooked = bookedDates.includes(dateStr);
+                    const isSelected = formData.eventDate === dateStr;
+                    const isToday = dateStr === minDate;
+
+                    return (
+                      <button
+                        key={day}
+                        type="button"
+                        disabled={isPast || isBooked || loading || checkingDate}
+                        onClick={() => {
+                          if (isPast || isBooked) return;
+                          const syntheticEvent = {
+                            target: { name: "eventDate", value: dateStr }
+                          } as React.ChangeEvent<HTMLInputElement>;
+                          handleChange(syntheticEvent);
+                        }}
+                        className={`cal-day${
+                          isSelected ? " cal-selected" :
+                          isBooked ? " cal-booked" :
+                          isPast ? " cal-past" :
+                          isToday ? " cal-today" : ""
+                        }`}
+                      >
+                        {day}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Legend */}
+                <div className="cal-legend">
+                  <span><span className="cal-dot cal-dot-avail" />Available</span>
+                  <span><span className="cal-dot cal-dot-booked" />Booked</span>
+                  <span><span className="cal-dot cal-dot-selected" />Selected</span>
+                </div>
+
+                {formData.eventDate && (
+                  <p className="cal-selected-label">
+                    ✦ {new Date(formData.eventDate + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+                  </p>
+                )}
+              </div>
+              {checkingDate && <small className="field-hint" style={{ color: "var(--fuchsia)", marginTop: "8px", display: "block" }}>Checking availability...</small>}
+            </div>
           </div>
 
+          {/* Section: Event Details */}
+          <p className="form-section-label">Event Details</p>
           <div className="booking-grid">
-            <select
-              required
-              id="makeupType"
-              aria-label="Makeup Style"
-              name="makeupType"
-              value={formData.makeupType}
-              onChange={handleChange}
-              disabled={loading || checkingDate}
-              className="review-input"
-            >
-              <option value="">Select Makeup Style</option>
-              <option value="soft-glam">Soft Glam</option>
-              <option value="full-glam">Full Glam</option>
-              <option value="natural">Natural Glam</option>
-              <option value="editorial">Editorial Glam</option>
-              <option value="traditional">Traditional Bridal</option>
-            </select>
-            <select
-              required
-              id="package"
-              aria-label="Package Selection"
-              name="package"
-              value={formData.package}
-              onChange={handleChange}
-              disabled={loading || checkingDate}
-              className="review-input"
-            >
-              <option value="">Select Package</option>
-              <option value="gold-3hrs">Gold - 3 Hours (GHS 2,000)</option>
-              <option value="gold-hair">Gold + Hair (GHS 2,600)</option>
-              <option value="gold-mum">Gold + Mum (GHS 3,100)</option>
-              <option value="premium-full">Premium Full Day (GHS 3,400)</option>
-              <option value="two-days-gold">Two Days Gold (GHS 3,600)</option>
-              <option value="two-days-premium">Two Days Premium (GHS 5,000)</option>
-              <option value="styling-two-days">Styling Two Days (GHS 4,300)</option>
-              <option value="full-styling">Full Day + Styling (GHS 5,500)</option>
-            </select>
+            <div className="field-wrap">
+              <label className="field-label">Location</label>
+              <input required id="location" autoComplete="address-line1" maxLength={120} type="text"
+                name="location" placeholder="e.g. East Legon, Accra" value={formData.location}
+                onChange={handleChange} disabled={loading || checkingDate} className="review-input" />
+            </div>
+            <div className="field-wrap">
+              <label className="field-label">Dress Color <span className="field-optional">(optional)</span></label>
+              <input id="dressColor" maxLength={40} type="text" name="dressColor"
+                placeholder="e.g. Ivory, Champagne" value={formData.dressColor}
+                onChange={handleChange} disabled={loading || checkingDate} className="review-input" />
+            </div>
           </div>
 
+          {/* Section: Package & Style */}
+          <p className="form-section-label">Package & Style</p>
           <div className="booking-grid">
-            <select
-              required
-              id="eventType"
-              aria-label="Event Type"
-              name="eventType"
-              value={formData.eventType}
-              onChange={handleChange}
-              disabled={loading || checkingDate}
-              className="review-input"
-            >
-              <option value="">Select Event Type</option>
+            <div className="field-wrap">
+              <label className="field-label">Makeup Style</label>
+              <select required id="makeupType" name="makeupType" value={formData.makeupType}
+                onChange={handleChange} disabled={loading || checkingDate} className="review-input">
+                <option value="">Select style...</option>
+                <option value="soft-glam">Soft Glam</option>
+                <option value="full-glam">Full Glam</option>
+                <option value="natural">Natural Glam</option>
+                <option value="editorial">Editorial Glam</option>
+                <option value="traditional">Traditional Bridal</option>
+              </select>
+            </div>
+            <div className="field-wrap">
+              <label className="field-label">Package</label>
+              <select required id="package" name="package" value={formData.package}
+                onChange={handleChange} disabled={loading || checkingDate} className="review-input">
+                <option value="">Select package...</option>
+                <option value="gold-3hrs">Gold · 3 Hours — GHS 2,000</option>
+                <option value="gold-hair">Gold + Hair — GHS 2,600</option>
+                <option value="gold-mum">Gold + Mum — GHS 3,100</option>
+                <option value="premium-full">Premium Full Day — GHS 3,400</option>
+                <option value="two-days-gold">Two Days Gold — GHS 3,600</option>
+                <option value="two-days-premium">Two Days Premium — GHS 5,000</option>
+                <option value="styling-two-days">Styling Two Days — GHS 4,300</option>
+                <option value="full-styling">Full Day + Styling — GHS 5,500</option>
+                <option disabled value="">── Bridesmaids (4+) ──</option>
+                <option value="bridesmaid-soft">Bridesmaids Soft Glam — GHS 450/person</option>
+                <option value="bridesmaid-full">Bridesmaids Full Glam — GHS 500/person</option>
+              </select>
+            </div>
+          </div>
+          <div className="field-wrap" style={{ marginBottom: "24px" }}>
+            <label className="field-label">Event Type</label>
+            <select required id="eventType" name="eventType" value={formData.eventType}
+              onChange={handleChange} disabled={loading || checkingDate} className="review-input">
+              <option value="">Select event type...</option>
               <option value="traditional-wedding">Traditional Wedding</option>
               <option value="white-wedding">White Wedding</option>
               <option value="both-weddings">Both Traditional & White</option>
@@ -585,93 +721,60 @@ export default function BookingPage() {
             </select>
           </div>
 
-          <textarea
-            id="message"
-            aria-label="Additional Message"
-            maxLength={500}
-            name="message"
-            placeholder="Tell us about your vision, any special requests, or questions you have..."
-            value={formData.message}
-            onChange={handleChange}
-            disabled={loading || checkingDate}
-            className="review-message"
-            style={{ marginBottom: "20px" }}
-          />
-          <small style={{ color: "rgba(249,240,246,0.6)", fontSize: "12px", display: "block", marginBottom: "20px" }}>
-            {formData.message.length}/500 characters
-          </small>
+          {/* Message */}
+          <div className="field-wrap">
+            <label className="field-label">Additional Notes <span className="field-optional">(optional)</span></label>
+            <textarea id="message" maxLength={500} name="message"
+              placeholder="Tell us about your vision, special requests, or any questions..."
+              value={formData.message} onChange={handleChange}
+              disabled={loading || checkingDate} className="review-message" />
+            <small className="field-hint" style={{ textAlign: "right", display: "block", marginTop: "6px" }}>
+              {formData.message.length}/500
+            </small>
+          </div>
 
-          {/* Honeypot field for spam protection */}
-          <input
-            type="text"
-            name="company"
-            style={{ display: "none" }}
-            tabIndex={-1}
-            autoComplete="new-password"
-          />
+          {/* Honeypot */}
+          <input type="text" name="company" style={{ display: "none" }} tabIndex={-1} autoComplete="new-password" />
 
-          <div style={{ textAlign: "center" }}>
-            <button 
-              type="submit" 
-              className="review-submit"
-              disabled={loading || checkingDate}
-              style={{ 
-                cursor: loading || checkingDate ? "not-allowed" : "pointer",
-                position: "relative",
-                overflow: "hidden"
-              }}
-            >
+          {/* Submit */}
+          <div style={{ textAlign: "center", marginTop: "36px", display: "flex", flexDirection: "column", alignItems: "center", gap: "14px" }}>
+            <button type="submit" className="booking-submit" disabled={loading || checkingDate}>
               <span style={{ opacity: loading ? 0 : 1 }}>
-                {loading ? "" : checkingDate ? "Checking Date..." : "✦ Book & Pay Deposit ✦"}
+                {checkingDate ? "Checking Date..." : "✦ Book & Pay Deposit ✦"}
               </span>
               {loading && (
-                <span style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "10px",
-                  position: "absolute",
-                  left: "50%",
-                  top: "50%",
-                  transform: "translate(-50%, -50%)",
-                  color: "white",
-                  fontSize: "12px",
-                  letterSpacing: "2px"
-                }}>
-                  <span style={{
-                    width: "16px",
-                    height: "16px",
-                    border: "2px solid transparent",
-                    borderTop: "2px solid white",
-                    borderRadius: "50%",
-                    animation: "spin 1s linear infinite"
-                  }} />
+                <span className="submit-spinner">
+                  <span className="spinner-ring" />
                   PROCESSING
                 </span>
               )}
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFormData(initialFormState);
+                setPhoneError(null);
+                lastCheckedDateRef.current = null;
+              }}
+              disabled={loading}
+              style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: "10px", letterSpacing: "3px", color: "rgba(249,240,246,0.4)", background: "none", border: "none", cursor: "pointer", padding: "4px 0", transition: "color 0.2s" }}
+              onMouseEnter={e => (e.currentTarget.style.color = "var(--fuchsia)")}
+              onMouseLeave={e => (e.currentTarget.style.color = "rgba(249,240,246,0.4)")}
+            >
+              RESET FORM
+            </button>
           </div>
         </form>
 
-        <div style={{ 
-          textAlign: "center", 
-          marginTop: "40px", 
-          padding: "30px", 
-          background: "rgba(214,63,168,0.05)", 
-          borderRadius: "16px",
-          border: "1px solid rgba(214,63,168,0.1)"
-        }}>
-          <p style={{ fontSize: "16px", color: "rgba(249,240,246,0.8)", marginBottom: "15px", fontWeight: "500" }}>
-            ✓ Your date will be reserved for 30 minutes
-          </p>
-          <p style={{ fontSize: "14px", color: "rgba(249,240,246,0.6)", marginBottom: "15px" }}>
-            ✦ Complete payment to confirm your booking
-          </p>
-          <p style={{ fontSize: "14px", color: "rgba(249,240,246,0.6)", marginBottom: "15px" }}>
-            ✦ A non-refundable deposit of GHS 1,000 is required for bridal packages
-          </p>
-          <p style={{ fontSize: "14px", color: "rgba(249,240,246,0.6)" }}>
-            For urgent bookings or questions, WhatsApp us at +233 54 236 1468
-          </p>
+        {/* Info strip */}
+        <div className="booking-info-strip">
+          <span>✓ Date reserved for 30 mins</span>
+          <span className="strip-divider">·</span>
+          <span>✦ Bridal: GHS 1,000 non-refundable deposit</span>
+          <span className="strip-divider">·</span>
+          <span>✦ Non-bridal: 50% deposit required</span>
+          <span className="strip-divider">·</span>
+          <span>WhatsApp <a href="https://wa.me/233542361468" style={{ color: "var(--fuchsia)", textDecoration: "none" }}>+233 54 236 1468</a></span>
         </div>
       </section>
     </main>

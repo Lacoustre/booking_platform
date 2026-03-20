@@ -55,8 +55,8 @@ export async function POST(req: Request) {
           data: {
             paymentStatus: "paid",
             status: "confirmed",
-            paymentReference: event.data.reference,
-            paidAmount: event.data.amount / 100 // Convert from kobo to cedis
+            paymentRef: event.data.reference,
+            depositAmount: event.data.amount / 100
           }
         });
 

@@ -11,8 +11,8 @@ export function calculateDeposit(packageName: string, price: number) {
   ];
 
   if (bridalPackages.includes(packageName)) {
-    return 1000; // fixed deposit for bridal packages
+    return 1000;
   }
 
-  return price / 2; // 50% for non-bridal packages
+  return Math.round(price / 2); // 50% for non-bridal (bridesmaids etc.)
 }

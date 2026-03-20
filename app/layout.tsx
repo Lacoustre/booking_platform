@@ -40,32 +40,11 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {/* Custom Cursor */}
-        <div className="cur-dot"></div>
-        <div className="cur-ring"></div>
-
-        {/* Glitter background canvas */}
+{/* Glitter background canvas */}
         <canvas className="glitter-canvas"></canvas>
 
         {children}
 
-        {/* Cursor Script */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-            const dot = document.querySelector('.cur-dot');
-            const ring = document.querySelector('.cur-ring');
-
-            document.addEventListener('mousemove', e => {
-              dot.style.left = e.clientX + 'px';
-              dot.style.top = e.clientY + 'px';
-
-              ring.style.left = e.clientX + 'px';
-              ring.style.top = e.clientY + 'px';
-            });
-          `,
-          }}
-        />
       </body>
     </html>
   );
